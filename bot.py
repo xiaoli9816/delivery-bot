@@ -2,10 +2,17 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import os, json
+import os
+import json
 
-# 👉 DÁN TOKEN BOT THẬT CỦA BẠN VÀO ĐÂY
-BOT_TOKEN = "8097074675:AAFOjfAE_mXTECTQ2rmV0jIBt3SD5Z8VDPM"
+# 🚨 Lưu ý:
+# - Trên Railway: BOT_TOKEN sẽ lấy từ biến môi trường BOT_TOKEN
+# - Trên máy local: bạn có thể đặt BOT_TOKEN trực tiếp hoặc cũng dùng biến môi trường
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise RuntimeError("Thiếu BOT_TOKEN trong biến môi trường!")
 
 # Kết nối Google Sheet
 scope = [
@@ -13,12 +20,12 @@ scope = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# ƯU TIÊN dùng biến môi trường GOOGLE_CREDENTIALS (cho Railway)
+# Trên Railway: dùng biến môi trường GOOGLE_CREDENTIALS
 if "GOOGLE_CREDENTIALS" in os.environ:
     creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 else:
-    # Chạy local: dùng file service_account.json như hiện tại
+    # Chạy local: dùng file service_account.json trong cùng thư mục
     creds = ServiceAccountCredentials.from_json_keyfile_name(
         "service_account.json", scope
     )
