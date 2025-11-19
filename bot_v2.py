@@ -187,21 +187,80 @@ def load_menu():
     """
     Đọc toàn bộ menu từ sheet MENU và chuẩn hóa key theo code.
 
-    Sheet MENU cần header:
-    ID | Name_VI | Name_EN | Price | Category | Status
+    Sheet MENU: ID | Name_VI | Name_EN | Price | Category | Status
+    (không cần đúng hoa thường 100%, mình xử lý bớt rồi)
     """
-    records_raw = menu_sheet.get_all_records()
+    try:
+        records_raw = menu_sheet.get_all_records()
+    except Exception as e:
+        print("ERROR load_menu step1:", e)
+        return []
+
     records = []
     for r in records_raw:
-        if not r.get("ID"):
+        try:
+            # Chấp nhận nhiều kiểu header khác nhau
+            item_id = (
+                r.get("ID")
+                or r.get("Id")
+                or r.get("id")
+                or r.get("Mã")
+                or ""
+            )
+            item_id = str(item_id).strip()
+            if not item_id:
+                continue
+
+            name_vi = (
+                r.get("Name_VI")
+                or r.get("NAME_VI")
+                or r.get("Tên_VI")
+                or r.get("Name Vi")
+                or ""
+            )
+            name_en = (
+                r.get("Name_EN")
+                or r.get("NAME_EN")
+                or r.get("Tên_EN")
+                or r.get("Name En")
+                or ""
+            )
+
+            # Price có thể là số, chuỗi có khoảng trắng, float...
+            raw_price = (
+                r.get("Price")
+                or r.get("PRICE")
+                or r.get("Giá")
+                or 0
+            )
+            if raw_price in ("", None):
+                price = 0
+            else:
+                try:
+                    price = int(raw_price)
+                except ValueError:
+                    price = int(float(str(raw_price).replace(",", "")))
+
+            status = (
+                r.get("Status")
+                or r.get("status")
+                or r.get("Trạng thái")
+                or "active"
+            )
+            status = str(status).strip().lower()
+
+            records.append({
+                "id": item_id,
+                "name_vi": str(name_vi).strip(),
+                "name_en": str(name_en).strip(),
+                "price": price,
+                "status": status,
+            })
+        except Exception as e:
+            # Nếu 1 dòng lỗi thì bỏ qua, không làm sập cả /menu
+            print("ERROR load_menu row:", r, "->", e)
             continue
-        records.append({
-            "id": str(r["ID"]).strip(),                     # F01, F02...
-            "name_vi": str(r.get("Name_VI", "")).strip(),
-            "name_en": str(r.get("Name_EN", "")).strip(),
-            "price": int(r.get("Price", 0)),
-            "status": str(r.get("Status", "")).strip().lower(),  # active / sold_out
-        })
+
     return records
 
 # =========================================================
@@ -209,31 +268,39 @@ def load_menu():
 # =========================================================
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    lang = get_lang(context, user.id)
-    records = load_menu()
+    try:
+        lang = get_lang(context, user.id)
+        records = load_menu()
 
-    if not records:
+        if not records:
+            await update.message.reply_text(
+                t(context, user.id, "empty_menu")
+            )
+            return
+
+        lines = [t(context, user.id, "menu_header"), ""]
+        for item in records:
+            if item["status"] not in ("active", "sold_out"):
+                continue
+
+            name = item["name_vi"] if lang == "vi" else item["name_en"]
+            status_txt = ""
+            if item["status"] == "sold_out":
+                status_txt = " (hết / sold out)"
+
+            lines.append(f"{item['id']}. {name} - {item['price']}đ{status_txt}")
+
+        lines.append("")
+        lines.append(t(context, user.id, "add_usage"))
+
+        await update.message.reply_text("\n".join(lines))
+
+    except Exception as e:
+        # Nếu còn lỗi gì nữa thì cũng trả lời cho user biết
+        print("ERROR in /menu handler:", e)
         await update.message.reply_text(
-            t(context, user.id, "empty_menu")
+            "🚫 Bot bị lỗi khi đọc MENU. Vui lòng kiểm tra lại Google Sheet hoặc xem logs trên Railway."
         )
-        return
-
-    lines = [t(context, user.id, "menu_header"), ""]
-    for item in records:
-        if item["status"] not in ("active", "sold_out"):
-            continue
-
-        name = item["name_vi"] if lang == "vi" else item["name_en"]
-        status_txt = ""
-        if item["status"] == "sold_out":
-            status_txt = " (hết / sold out)"
-
-        lines.append(f"{item['id']}. {name} - {item['price']}đ{status_txt}")
-
-    lines.append("")
-    lines.append(t(context, user.id, "add_usage"))
-
-    await update.message.reply_text("\n".join(lines))
 
 # =========================================================
 #  CART
@@ -456,3 +523,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
