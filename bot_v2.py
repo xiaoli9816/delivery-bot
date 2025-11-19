@@ -287,14 +287,12 @@ def add_to_cart(user_id: int, item: dict, qty: int):
             row["qty"] += qty
             break
     else:
-        cart.append(
-            {
-                "id": item["id"],
-                "name": item["name"],
-                "price": item["price"],
-                "qty": qty,
-            }
-        )
+        cart.append({
+            "id": str(item["id"]),   # luôn lưu dạng chuỗi
+            "name": item["name"],
+            "price": int(item["price"]),
+            "qty": qty
+        })
     CARTS[user_id] = cart
 
 
@@ -303,15 +301,15 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
 
     if not args:
-        await update.message.reply_text(t(context, user.id, "add_usage"))
+        await update.message.reply_text(
+            t(context, user.id, "add_usage")
+        )
         return
 
-    try:
-        item_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text(t(context, user.id, "add_usage"))
-        return
+    # Lấy ID món dạng chuỗi, ví dụ: "F03" hoặc "f03"
+    item_id = args[0].strip().lower()
 
+    # Số lượng (mặc định = 1)
     qty = 1
     if len(args) >= 2:
         try:
@@ -323,45 +321,29 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     records = load_menu()
     target = None
     for item in records:
-        if int(item["id"]) == item_id:
+        sheet_id = str(item["id"]).strip().lower()   # ID trong sheet
+        if sheet_id == item_id:
             target = item
             break
 
     if not target:
-        await update.message.reply_text(t(context, user.id, "item_not_found"))
+        await update.message.reply_text(
+            t(context, user.id, "item_not_found")
+        )
         return
 
     name = target["name_vi"] if lang == "vi" else target["name_en"]
+    price = int(target["price"])
+
     add_to_cart(
         user.id,
-        {"id": item_id, "name": name, "price": int(target["price"])},
-        qty,
+        {"id": target["id"], "name": name, "price": price},
+        qty
     )
 
     await update.message.reply_text(
         t(context, user.id, "added_to_cart", qty=qty, name=name)
     )
-
-
-async def cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    cart = CARTS.get(user.id, [])
-
-    if not cart:
-        await update.message.reply_text(t(context, user.id, "cart_empty"))
-        return
-
-    lines = [t(context, user.id, "cart_header"), ""]
-    total = 0
-    for row in cart:
-        line_total = row["price"] * row["qty"]
-        total += line_total
-        lines.append(f"{row['qty']} x {row['name']} = {line_total}đ")
-
-    lines.append("")
-    lines.append(f"👉 Total: {total}đ")
-
-    await update.message.reply_text("\n".join(lines))
 
 
 # ========= FLOW /order (theo giỏ hàng, bạn đã dùng ok) =========
@@ -763,3 +745,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
