@@ -685,64 +685,35 @@ async def simple_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============ MAIN ============
-
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Lệnh cơ bản
+    # Chọn ngôn ngữ
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(lang_button, pattern="^lang_"))
+
+    # Hướng dẫn
     app.add_handler(CommandHandler("help", help_cmd))
+
+    # Các lệnh đặt đồ
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("add", add_cmd))
-    app.add_handler(CommandHandler("cart", cart))
+    app.add_handler(CommandHandler("cart", cart))        # xem giỏ hàng
+    # alias tiếng Việt không dấu (OPTIONAL)
+    app.add_handler(CommandHandler("giohang", cart))
 
-    # Conversation /simple (đặt nhanh)
-    simple_conv = ConversationHandler(
-        entry_points=[CommandHandler("simple", simple_start)],
-        states={
-            SIMPLE_PRODUCT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, simple_product)
-            ],
-            SIMPLE_QTY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, simple_qty)
-            ],
-            SIMPLE_METHOD: [
-                CallbackQueryHandler(
-                    simple_method, pattern="^simple_(pickup|delivery)$"
-                )
-            ],
-            SIMPLE_INFO: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, simple_info)
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", simple_cancel)],
-    )
-    app.add_handler(simple_conv)
-
-    # Conversation /order (theo giỏ)
-    order_conv = ConversationHandler(
+    # luồng /order
+    conv_handler = ConversationHandler(
         entry_points=[CommandHandler("order", order_start)],
         states={
-            PHONE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, order_phone)
-            ],
-            ADDRESS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, order_address)
-            ],
-            CONFIRM: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, order_confirm)
-            ],
+            PHONE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, order_phone)],
+            ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_address)],
+            CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_confirm)],
         },
         fallbacks=[CommandHandler("cancel", order_cancel)],
     )
-    app.add_handler(order_conv)
-
-    # Callback chọn ngôn ngữ
-    app.add_handler(CallbackQueryHandler(lang_button, pattern="^lang_"))
+    app.add_handler(conv_handler)
 
     app.run_polling(drop_pending_updates=True)
 
-
-if __name__ == "__main__":
-    main()
 
