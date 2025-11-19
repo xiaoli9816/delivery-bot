@@ -9,18 +9,23 @@ import os
 import json
 from datetime import datetime
 
-# ==== KẾT NỐI TELEGRAM TOKEN TỪ BIẾN MÔI TRƯỜNG ====
+# =========================================================
+#  TELEGRAM BOT TOKEN TỪ BIẾN MÔI TRƯỜNG
+# =========================================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Missing BOT_TOKEN environment variable!")
 
-# ==== KẾT NỐI GOOGLE SHEET ====
+# =========================================================
+#  KẾT NỐI GOOGLE SHEET
+# =========================================================
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
 
 if "GOOGLE_CREDENTIALS" in os.environ:
+    # Trên Railway: dùng biến môi trường GOOGLE_CREDENTIALS (JSON)
     creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 else:
@@ -36,10 +41,14 @@ menu_sheet = client.open(SHEET_NAME).worksheet("MENU")
 orders_sheet = client.open(SHEET_NAME).worksheet("ORDERS")
 settings_sheet = client.open(SHEET_NAME).worksheet("SETTINGS")
 
-# ==== GIỮ CART & NGÔN NGỮ TRONG RAM ====
-CARTS = {}  # {user_id: [{"id": id, "name": str, "price": int, "qty": int}, ...]}
+# =========================================================
+#  CART & NGÔN NGỮ TRONG RAM
+# =========================================================
+CARTS = {}  # {user_id: [{"id": str, "name": str, "price": int, "qty": int}, ...]}
 
-# ==== ĐA NGÔN NGỮ ====
+# =========================================================
+#  ĐA NGÔN NGỮ
+# =========================================================
 MESSAGES = {
     "welcome": {
         "vi": "Xin chào! Vui lòng chọn ngôn ngữ / Please choose language:",
@@ -62,8 +71,8 @@ MESSAGES = {
         "en": "No items in the menu yet."
     },
     "add_usage": {
-        "vi": "Cách dùng: /add <id_món> [số_lượng]. Ví dụ: /add 1 2",
-        "en": "Usage: /add <item_id> [qty]. Example: /add 1 2"
+        "vi": "Cách dùng: /add <ID_món> [số_lượng]. Ví dụ: /add F01 2",
+        "en": "Usage: /add <item_id> [qty]. Example: /add F01 2"
     },
     "item_not_found": {
         "vi": "❌ Không tìm thấy món với ID đó.",
@@ -105,13 +114,16 @@ MESSAGES = {
 
 PHONE, ADDRESS, CONFIRM = range(3)
 
-
+# =========================================================
+#  HÀM NGÔN NGỮ
+# =========================================================
 def get_default_lang() -> str:
+    """Đọc ngôn ngữ mặc định từ sheet SETTINGS (key=language_default)."""
     try:
         records = settings_sheet.get_all_records()
         for row in records:
-            if row["key"] == "language_default":
-                return row["value"]
+            if str(row.get("key", "")).strip() == "language_default":
+                return str(row.get("value", "vi")).strip()
     except Exception:
         pass
     return "vi"
@@ -132,9 +144,9 @@ def t(context: ContextTypes.DEFAULT_TYPE, user_id: int, key: str, **kwargs) -> s
         text = text.format(**kwargs)
     return text
 
-
-# ==== HANDLERS ====
-
+# =========================================================
+#  HANDLERS /start + chọn ngôn ngữ
+# =========================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     context.user_data.setdefault("lang", get_default_lang())
@@ -168,12 +180,33 @@ async def lang_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t(context, user.id, "lang_set_en")
         )
 
-
+# =========================================================
+#  ĐỌC MENU TỪ GOOGLE SHEET
+# =========================================================
 def load_menu():
-    """Đọc toàn bộ menu từ sheet."""
-    return menu_sheet.get_all_records()
+    """
+    Đọc toàn bộ menu từ sheet MENU và chuẩn hóa key theo code.
 
+    Sheet MENU cần header:
+    ID | Name_VI | Name_EN | Price | Category | Status
+    """
+    records_raw = menu_sheet.get_all_records()
+    records = []
+    for r in records_raw:
+        if not r.get("ID"):
+            continue
+        records.append({
+            "id": str(r["ID"]).strip(),                     # F01, F02...
+            "name_vi": str(r.get("Name_VI", "")).strip(),
+            "name_en": str(r.get("Name_EN", "")).strip(),
+            "price": int(r.get("Price", 0)),
+            "status": str(r.get("Status", "")).strip().lower(),  # active / sold_out
+        })
+    return records
 
+# =========================================================
+#  /menu
+# =========================================================
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = get_lang(context, user.id)
@@ -187,13 +220,14 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = [t(context, user.id, "menu_header"), ""]
     for item in records:
-        if item.get("status", "").lower() not in ("active", "sold_out"):
+        if item["status"] not in ("active", "sold_out"):
             continue
+
         name = item["name_vi"] if lang == "vi" else item["name_en"]
-        status = item.get("status", "active")
         status_txt = ""
-        if status == "sold_out":
+        if item["status"] == "sold_out":
             status_txt = " (hết / sold out)"
+
         lines.append(f"{item['id']}. {name} - {item['price']}đ{status_txt}")
 
     lines.append("")
@@ -201,10 +235,11 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("\n".join(lines))
 
-
+# =========================================================
+#  CART
+# =========================================================
 def add_to_cart(user_id: int, item: dict, qty: int):
     cart = CARTS.get(user_id, [])
-    # nếu món đã có, cộng dồn
     for row in cart:
         if row["id"] == item["id"]:
             row["qty"] += qty
@@ -229,13 +264,8 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    try:
-        item_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text(
-            t(context, user.id, "add_usage")
-        )
-        return
+    # ID dạng chuỗi: F01, f01, f02...
+    item_id = args[0].strip().upper()
 
     qty = 1
     if len(args) >= 2:
@@ -248,7 +278,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     records = load_menu()
     target = None
     for item in records:
-        if int(item["id"]) == item_id:
+        if item["id"].upper() == item_id:
             target = item
             break
 
@@ -259,7 +289,11 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     name = target["name_vi"] if lang == "vi" else target["name_en"]
-    add_to_cart(user.id, {"id": item_id, "name": name, "price": int(target["price"])}, qty)
+    add_to_cart(
+        user.id,
+        {"id": target["id"], "name": name, "price": target["price"]},
+        qty
+    )
 
     await update.message.reply_text(
         t(context, user.id, "added_to_cart", qty=qty, name=name)
@@ -288,9 +322,9 @@ async def cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("\n".join(lines))
 
-
-# ==== /order Conversation ====
-
+# =========================================================
+#  FLOW /order
+# =========================================================
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     cart = CARTS.get(user.id, [])
@@ -353,7 +387,7 @@ async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     address = context.user_data["order_address"]
     lang = get_lang(context, user.id)
 
-    # Tạo order_id đơn giản = số dòng hiện tại + 10001
+    # order_id đơn giản = số dòng hiện tại + 10001
     current_records = orders_sheet.get_all_records()
     order_id = 10001 + len(current_records)
 
@@ -390,17 +424,22 @@ async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-
+# =========================================================
+#  MAIN
+# =========================================================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # /start + chọn ngôn ngữ
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(lang_button, pattern="^lang_"))
 
+    # Menu & cart
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CommandHandler("cart", cart))
 
+    # Conversation /order
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("order", order_start)],
         states={
