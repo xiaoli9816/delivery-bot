@@ -12,25 +12,26 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
 import os
 import json
-from datetime import datetime
 
-# ================== TOKEN & GROUP ADMIN ==================
+# ================== CẤU HÌNH TOKEN & ADMIN ==================
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Missing BOT_TOKEN environment variable!")
 
-# ID nhóm Admin & Shipper (Delivery Food & Coffee – Admin & Shipper)
-# CẦN ĐẶT ENV: ADMIN_CHAT_ID = -100xxxxxxxxxx (số ID của nhóm)
-ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "0"))
+ADMIN_CHAT_ID_RAW = os.environ.get("ADMIN_CHAT_ID", "").strip()
+try:
+    ADMIN_CHAT_ID = int(ADMIN_CHAT_ID_RAW) if ADMIN_CHAT_ID_RAW else None
+except ValueError:
+    ADMIN_CHAT_ID = None
 
 # ================== KẾT NỐI GOOGLE SHEET ==================
-
-SHEET_NAME = "77_Delivery_System"
 
 scope = [
     "https://spreadsheets.google.com/feeds",
@@ -46,13 +47,20 @@ else:
     )
 
 client = gspread.authorize(creds)
+
+SHEET_NAME = "77_Delivery_System"
 menu_sheet = client.open(SHEET_NAME).worksheet("MENU")
 orders_sheet = client.open(SHEET_NAME).worksheet("ORDERS")
 settings_sheet = client.open(SHEET_NAME).worksheet("SETTINGS")
 
-# ================== BIẾN LƯU CART TRONG RAM ==================
+# ================== TRẠNG THÁI CONVERSATION ==================
 
-CARTS = {}  # {user_id: [{"id": str, "name": str, "price": int, "qty": int}, ...]}
+PHONE, ADDRESS, CONFIRM = range(3)
+
+# ================== BỘ NHỚ TẠM ==================
+
+# {user_id: [{"id": str, "name": str, "price": int, "qty": int, "image_url": str}, ...]}
+CARTS = {}
 
 # ================== ĐA NGÔN NGỮ ==================
 
@@ -70,13 +78,14 @@ MESSAGES = {
         "en": "✅ You switched to English.",
     },
     "choose_action": {
-        "vi": "📋 Chọn thao tác:",
-        "en": "📋 Choose an action:",
+        "vi": "📌 Chọn thao tác:",
+        "en": "📌 Choose an action:",
     },
-    "menu_header": {
-        "vi": "📋 MENU HÔM NAY:",
-        "en": "📋 TODAY'S MENU:",
-    },
+    "btn_menu": {"vi": "📋 Menu", "en": "📋 Menu"},
+    "btn_cart": {"vi": "🛒 Giỏ hàng", "en": "🛒 Cart"},
+    "btn_order": {"vi": "📦 Đặt hàng", "en": "📦 Order"},
+    "btn_help": {"vi": "❓ Hướng dẫn", "en": "❓ Help"},
+    "menu_header": {"vi": "📋 MENU HÔM NAY:", "en": "📋 TODAY'S MENU:"},
     "empty_menu": {
         "vi": "Hiện chưa có món nào trong menu.",
         "en": "No items in the menu yet.",
@@ -90,8 +99,8 @@ MESSAGES = {
         "en": "❌ Item not found with that ID.",
     },
     "added_to_cart": {
-        "vi": "✅ Đã thêm vào giỏ: {qty} x {name}\nDùng /cart để xem giỏ hoặc /order để đặt hàng.",
-        "en": "✅ Added to cart: {qty} x {name}\nUse /cart to view cart or /order to checkout.",
+        "vi": "✅ Đã thêm vào giỏ: {qty} x {name}",
+        "en": "✅ Added to cart: {qty} x {name}",
     },
     "cart_empty": {
         "vi": "🛒 Giỏ hàng của bạn đang trống.",
@@ -101,6 +110,35 @@ MESSAGES = {
         "vi": "🛒 Giỏ hàng hiện tại:",
         "en": "🛒 Your current cart:",
     },
+    "cart_next_actions": {
+        "vi": "Bạn có thể xem giỏ bằng /cart hoặc đặt hàng bằng /order.",
+        "en": "You can check cart with /cart or place order with /order.",
+    },
+    "help_text": {
+        "vi": (
+            "🆘 Hướng dẫn đặt đồ:\n\n"
+            "/start - Chọn ngôn ngữ\n"
+            "/help - Xem hướng dẫn\n"
+            "/menu - Xem menu hiện tại\n"
+            "/add <id> [số_lượng] - Thêm món vào giỏ (VD: /add F01 2)\n"
+            "/cart - Xem giỏ hàng\n"
+            "/order - Đặt hàng theo giỏ\n"
+            "/cancel - Hủy luồng đặt hàng hiện tại\n\n"
+            "💡 Gợi ý: Bạn có thể xem ảnh món + ID món trong nhóm menu, "
+            "sau đó dùng /add để đặt nhanh."
+        ),
+        "en": (
+            "🆘 How to order:\n\n"
+            "/start - Choose language\n"
+            "/help - Show help\n"
+            "/menu - Show current menu\n"
+            "/add <id> [qty] - Add item to cart (Ex: /add F01 2)\n"
+            "/cart - View cart\n"
+            "/order - Place order by cart\n"
+            "/cancel - Cancel current ordering\n\n"
+            "💡 Tip: Check dish photos + IDs in the menu group, then use /add."
+        ),
+    },
     "order_start": {
         "vi": "📦 Bắt đầu đặt hàng. Vui lòng nhập SỐ ĐIỆN THOẠI:",
         "en": "📦 Start order. Please send your PHONE NUMBER:",
@@ -109,52 +147,33 @@ MESSAGES = {
         "vi": "Vui lòng gửi ĐỊA CHỈ giao hàng:",
         "en": "Please send your DELIVERY ADDRESS:",
     },
-    "order_saved": {
-        "vi": "✅ Đơn của bạn đã được ghi nhận! Mã đơn: {order_id}",
-        "en": "✅ Your order has been placed! Order ID: {order_id}",
+    "order_summary_title": {
+        "vi": "Xác nhận đơn:",
+        "en": "Order summary:",
     },
     "order_cancelled": {
         "vi": "❌ Đã hủy đơn.",
         "en": "❌ Order cancelled.",
     },
-    "help": {
-        "vi": (
-            "🆘 Hướng dẫn đặt đồ:\n\n"
-            "/start - Chọn ngôn ngữ\n"
-            "/help - Xem hướng dẫn\n"
-            "/menu - Xem menu hiện tại\n"
-            "/add <id> [số_lượng] - Thêm món vào giỏ (VD: /add F01 2)\n"
-            "/cart - Xem giỏ hàng\n"
-            "/order - Đặt hàng theo giỏ (ghi đơn vào Google Sheet)\n"
-            "/cancel - Hủy luồng đặt hàng hiện tại\n\n"
-            "💡 Gợi ý: Trong nhóm Delivery Food & Coffee – Order Now bạn có thể gửi hình món, ghi kèm ID món. "
-            "Khách chỉ cần nhắn riêng bot và dùng /menu + /add + /order."
-        ),
-        "en": (
-            "🆘 How to order:\n\n"
-            "/start - Choose language\n"
-            "/help - Show this help\n"
-            "/menu - Show menu\n"
-            "/add <id> [qty] - Add item to cart (Ex: /add F01 2)\n"
-            "/cart - View cart\n"
-            "/order - Place order using cart\n"
-            "/cancel - Cancel current order flow."
-        ),
+    "order_saved": {
+        "vi": "✅ Đơn của bạn đã được ghi nhận! Mã đơn: {order_id}",
+        "en": "✅ Your order has been placed! Order ID: {order_id}",
+    },
+    "order_btn_order_hint": {
+        "vi": "📦 Bấm /order để bắt đầu đặt hàng.",
+        "en": "📦 Type /order to start ordering.",
     },
 }
 
-PHONE, ADDRESS, CONFIRM = range(3)
-
-# ================== HÀM NGÔN NGỮ ==================
-
 
 def get_default_lang() -> str:
-    """Lấy ngôn ngữ default từ sheet SETTINGS (nếu có)."""
+    """Đọc SETTINGS.language_default nếu có, mặc định 'vi'."""
     try:
         records = settings_sheet.get_all_records()
         for row in records:
             if str(row.get("key", "")).strip() == "language_default":
-                return str(row.get("value", "vi")).strip() or "vi"
+                value = str(row.get("value", "")).strip().lower()
+                return value if value in ("vi", "en") else "vi"
     except Exception:
         pass
     return "vi"
@@ -176,36 +195,113 @@ def t(context: ContextTypes.DEFAULT_TYPE, user_id: int, key: str, **kwargs) -> s
     return text
 
 
-# ================== KEYBOARD PHỤ TRỢ ==================
+# ================== HÀM PHỤ TRỢ ==================
 
 
-def main_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
-    if lang == "vi":
-        buttons = [
+def main_menu_keyboard(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Inline keyboard 4 nút sau khi chọn ngôn ngữ."""
+    lang = get_lang(context, user_id)
+    return InlineKeyboardMarkup(
+        [
             [
-                InlineKeyboardButton("📋 Menu", callback_data="action_menu"),
-                InlineKeyboardButton("🛒 Giỏ hàng", callback_data="action_cart"),
+                InlineKeyboardButton(
+                    MESSAGES["btn_menu"][lang], callback_data="main_menu_menu"
+                ),
+                InlineKeyboardButton(
+                    MESSAGES["btn_cart"][lang], callback_data="main_menu_cart"
+                ),
             ],
             [
-                InlineKeyboardButton("📦 Đặt hàng", callback_data="action_order"),
-                InlineKeyboardButton("❓ Hướng dẫn", callback_data="action_help"),
+                InlineKeyboardButton(
+                    MESSAGES["btn_order"][lang], callback_data="main_menu_order"
+                ),
+                InlineKeyboardButton(
+                    MESSAGES["btn_help"][lang], callback_data="main_menu_help"
+                ),
             ],
         ]
+    )
+
+
+def load_menu():
+    """Đọc toàn bộ menu từ sheet."""
+    return menu_sheet.get_all_records()
+
+
+def add_to_cart(user_id: int, item: dict, qty: int):
+    """Thêm món vào giỏ, cộng dồn nếu trùng id."""
+    cart = CARTS.get(user_id, [])
+    for row in cart:
+        if row["id"] == item["id"]:
+            row["qty"] += qty
+            break
     else:
-        buttons = [
-            [
-                InlineKeyboardButton("📋 Menu", callback_data="action_menu"),
-                InlineKeyboardButton("🛒 Cart", callback_data="action_cart"),
-            ],
-            [
-                InlineKeyboardButton("📦 Order", callback_data="action_order"),
-                InlineKeyboardButton("❓ Help", callback_data="action_help"),
-            ],
-        ]
-    return InlineKeyboardMarkup(buttons)
+        cart.append(item | {"qty": qty})
+    CARTS[user_id] = cart
 
 
-# ================== /start & chọn ngôn ngữ ==================
+async def send_menu(chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Gửi menu theo ngôn ngữ người dùng."""
+    lang = get_lang(context, user_id)
+    records = load_menu()
+
+    if not records:
+        await context.bot.send_message(chat_id, t(context, user_id, "empty_menu"))
+        return
+
+    lines = [t(context, user_id, "menu_header"), ""]
+    for item in records:
+        # Chấp nhận các tên cột linh hoạt
+        status = str(item.get("status", "") or item.get("Status", "")).lower()
+        if status not in ("", "active", "sold_out"):
+            continue
+
+        item_id = str(item.get("id") or item.get("ID") or "").strip()
+        name_vi = item.get("name_vi") or item.get("Name_VI") or item.get("NAME_VI")
+        name_en = item.get("name_en") or item.get("Name_EN") or item.get("NAME_EN")
+        price = item.get("price") or item.get("Price")
+
+        try:
+            price = int(price)
+        except Exception:
+            continue
+
+        name = name_vi if lang == "vi" else (name_en or name_vi or "")
+
+        status_txt = ""
+        if status == "sold_out":
+            status_txt = " (hết / sold out)"
+
+        lines.append(f"{item_id}. {name} - {price}đ{status_txt}")
+
+    lines.append("")
+    lines.append(t(context, user_id, "add_usage"))
+
+    await context.bot.send_message(chat_id, "\n".join(lines))
+
+
+async def send_cart(chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Gửi nội dung giỏ hàng."""
+    cart = CARTS.get(user_id, [])
+    if not cart:
+        await context.bot.send_message(chat_id, t(context, user_id, "cart_empty"))
+        return
+
+    lines = [t(context, user_id, "cart_header"), ""]
+    total = 0
+    for row in cart:
+        line_total = row["price"] * row["qty"]
+        total += line_total
+        lines.append(f"{row['qty']} x {row['name']} = {line_total}đ")
+
+    lines.append("")
+    lines.append(f"👉 Total: {total}đ")
+    lines.append(t(context, user_id, "cart_next_actions"))
+
+    await context.bot.send_message(chat_id, "\n".join(lines))
+
+
+# ================== HANDLER LỆNH CƠ BẢN ==================
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -219,6 +315,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
         t(context, user.id, "welcome"), reply_markup=reply_markup
     )
@@ -236,97 +333,26 @@ async def lang_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["lang"] = "en"
         await query.edit_message_text(t(context, user.id, "lang_set_en"))
 
-    lang = get_lang(context, user.id)
+    # Sau khi chọn ngôn ngữ, gửi menu thao tác
     await query.message.reply_text(
-        t(context, user.id, "choose_action"), reply_markup=main_menu_keyboard(lang)
+        t(context, user.id, "choose_action"),
+        reply_markup=main_menu_keyboard(context, user.id),
     )
-
-
-# ================== /help ==================
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await update.message.reply_text(t(context, user.id, "help"))
-
-
-# ================== MENU & GIỎ HÀNG (cho lệnh) ==================
-
-
-def load_menu():
-    return menu_sheet.get_all_records()
+    await update.message.reply_text(t(context, user.id, "help_text"))
 
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý /menu qua text command."""
-    await _send_menu(update.message, update.effective_user, context)
+    user = update.effective_user
+    await send_menu(update.effective_chat.id, user.id, context)
 
 
 async def cart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý /cart qua text command."""
-    await _send_cart(update.message, update.effective_user, context)
-
-
-async def _send_menu(target_message, user, context: ContextTypes.DEFAULT_TYPE):
-    lang = get_lang(context, user.id)
-    records = load_menu()
-
-    if not records:
-        await target_message.reply_text(t(context, user.id, "empty_menu"))
-        return
-
-    lines = [t(context, user.id, "menu_header"), ""]
-    for item in records:
-        status = (
-            str(item.get("status") or item.get("Status") or "")
-            .strip()
-            .lower()
-        )
-        if status not in ("active", "sold_out", ""):
-            continue
-
-        item_id = item.get("ID") or item.get("id") or ""
-        name_vi = item.get("Name_VI") or item.get("name_vi") or ""
-        name_en = item.get("Name_EN") or item.get("name_en") or ""
-        price = item.get("Price") or item.get("price") or 0
-
-        try:
-            price = int(price)
-        except Exception:
-            price = 0
-
-        name = name_vi if lang == "vi" else (name_en or name_vi)
-        status_txt = " (hết / sold out)" if status == "sold_out" else ""
-        lines.append(f"{item_id}. {name} - {price}đ{status_txt}")
-
-    lines.append("")
-    lines.append(t(context, user.id, "add_usage"))
-
-    await target_message.reply_text("\n".join(lines))
-
-
-async def _send_cart(target_message, user, context: ContextTypes.DEFAULT_TYPE):
-    cart_data = CARTS.get(user.id, [])
-
-    if not cart_data:
-        await target_message.reply_text(t(context, user.id, "cart_empty"))
-        return
-
-    lines = [t(context, user.id, "cart_header"), ""]
-    total = 0
-    for row in cart_data:
-        line_total = row["price"] * row["qty"]
-        total += line_total
-        lines.append(f"{row['qty']} x {row['name']} = {line_total}đ")
-
-    lines.append("")
-    lines.append(f"👉 Total: {total}đ")
-    lines.append("Dùng /order để tiến hành đặt hàng.")
-
-    await target_message.reply_text("\n".join(lines))
-
-
-# ================== /add ==================
+    user = update.effective_user
+    await send_cart(update.effective_chat.id, user.id, context)
 
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -337,7 +363,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(context, user.id, "add_usage"))
         return
 
-    item_code = args[0].strip()
+    item_code = args[0]  # ví dụ F01, F02...
     qty = 1
     if len(args) >= 2:
         try:
@@ -348,9 +374,10 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(context, user.id)
     records = load_menu()
     target = None
+
     for item in records:
-        item_id = str(item.get("ID") or item.get("id") or "").strip()
-        if item_id.lower() == item_code.lower():
+        raw_id = str(item.get("id") or item.get("ID") or "").strip()
+        if raw_id.lower() == item_code.lower():
             target = item
             break
 
@@ -358,67 +385,76 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(context, user.id, "item_not_found"))
         return
 
-    name_vi = target.get("Name_VI") or target.get("name_vi") or ""
-    name_en = target.get("Name_EN") or target.get("name_en") or ""
-    price = target.get("Price") or target.get("price") or 0
+    name_vi = target.get("name_vi") or target.get("Name_VI") or target.get("NAME_VI")
+    name_en = target.get("name_en") or target.get("Name_EN") or target.get("NAME_EN")
+    price = target.get("price") or target.get("Price")
     try:
         price = int(price)
     except Exception:
-        price = 0
+        await update.message.reply_text("Lỗi dữ liệu giá trong MENU.")
+        return
 
-    name = name_vi if lang == "vi" else (name_en or name_vi)
-    _add_to_cart(
+    name = name_vi if lang == "vi" else (name_en or name_vi or "")
+
+    image_url = (
+        target.get("image_url")
+        or target.get("Image_URL")
+        or target.get("IMAGE_URL")
+        or ""
+    )
+
+    add_to_cart(
         user.id,
-        {"id": item_code, "name": name, "price": price},
+        {
+            "id": str(item_code),
+            "name": name,
+            "price": price,
+            "image_url": image_url,
+        },
         qty,
     )
 
     await update.message.reply_text(
         t(context, user.id, "added_to_cart", qty=qty, name=name)
+        + "\n"
+        + t(context, user.id, "cart_next_actions")
     )
 
 
-def _add_to_cart(user_id: int, item: dict, qty: int):
-    cart = CARTS.get(user_id, [])
-    for row in cart:
-        if row["id"] == item["id"]:
-            row["qty"] += qty
-            break
-    else:
-        cart.append(
-            {
-                "id": item["id"],
-                "name": item["name"],
-                "price": item["price"],
-                "qty": qty,
-            }
-        )
-    CARTS[user_id] = cart
+# ================== NÚT MAIN MENU (INLINE) ==================
 
 
-# ================== ĐẶT HÀNG (Conversation) ==================
-
-
-async def _order_start_common(target_message, user, context: ContextTypes.DEFAULT_TYPE):
-    cart_data = CARTS.get(user.id, [])
-    if not cart_data:
-        await target_message.reply_text(t(context, user.id, "cart_empty"))
-        return ConversationHandler.END
-
-    await target_message.reply_text(t(context, user.id, "order_start"))
-    return PHONE
-
-
-async def order_start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    return await _order_start_common(update.message, user, context)
-
-
-async def order_start_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý khi bấm các nút Menu / Giỏ hàng / Đặt hàng / Hướng dẫn."""
     query = update.callback_query
     await query.answer()
     user = query.from_user
-    return await _order_start_common(query.message, user, context)
+    chat_id = query.message.chat_id
+    data = query.data
+
+    if data == "main_menu_menu":
+        await send_menu(chat_id, user.id, context)
+    elif data == "main_menu_cart":
+        await send_cart(chat_id, user.id, context)
+    elif data == "main_menu_help":
+        await context.bot.send_message(chat_id, t(context, user.id, "help_text"))
+    elif data == "main_menu_order":
+        # Để đơn giản, hướng dẫn gõ /order
+        await context.bot.send_message(chat_id, t(context, user.id, "order_btn_order_hint"))
+
+
+# ================== /order CONVERSATION ==================
+
+
+async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    cart = CARTS.get(user.id, [])
+    if not cart:
+        await update.message.reply_text(t(context, user.id, "cart_empty"))
+        return ConversationHandler.END
+
+    await update.message.reply_text(t(context, user.id, "order_start"))
+    return PHONE
 
 
 async def order_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -432,30 +468,32 @@ async def order_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     context.user_data["order_address"] = update.message.text.strip()
 
-    cart_data = CARTS.get(user.id, [])
-    total = sum(row["price"] * row["qty"] for row in cart_data)
+    cart = CARTS.get(user.id, [])
+    total = sum(row["price"] * row["qty"] for row in cart)
+
     lines = []
-    for row in cart_data:
+    for row in cart:
         lines.append(f"{row['qty']} x {row['name']} = {row['price'] * row['qty']}đ")
 
     items_text = "\n".join(lines)
     phone = context.user_data["order_phone"]
     address = context.user_data["order_address"]
 
-    context.user_data["pending_order"] = {
-        "cart": cart_data,
-        "total": total,
-        "phone": phone,
-        "address": address,
-    }
-
-    txt = (
-        f"Xác nhận đơn:\n{items_text}\n"
+    text = (
+        f"{t(context, user.id, 'order_summary_title')}\n"
+        f"{items_text}\n"
         f"Tổng: {total}đ\n"
         f"SĐT: {phone}\n"
         f"Địa chỉ: {address}\n\n"
         f"Bạn xác nhận đặt đơn này chứ?"
     )
+
+    # Tìm ảnh đầu tiên trong giỏ nếu có
+    first_image = None
+    for row in cart:
+        if row.get("image_url"):
+            first_image = row["image_url"]
+            break
 
     keyboard = [
         [
@@ -465,88 +503,111 @@ async def order_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(txt, reply_markup=markup)
+    if first_image:
+        await update.message.reply_photo(
+            photo=first_image,
+            caption=text,
+            reply_markup=markup,
+        )
+    else:
+        await update.message.reply_text(text, reply_markup=markup)
+
     return CONFIRM
 
 
 async def order_confirm_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý nút Yes/No xác nhận đơn."""
     query = update.callback_query
     await query.answer()
     user = query.from_user
-    choice = query.data
+    user_id = user.id
 
-    pending = context.user_data.pop("pending_order", None)
-
-    # Xóa nút YES/NO
-    try:
+    if query.data == "order_no":
         await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-
-    if not pending:
-        await query.message.reply_text(
-            "❌ Không tìm thấy dữ liệu đơn hàng. Vui lòng /order lại."
-        )
+        await query.message.reply_text(t(context, user_id, "order_cancelled"))
         return ConversationHandler.END
 
-    if choice == "order_no":
-        CARTS[user.id] = []
-        await query.message.reply_text(t(context, user.id, "order_cancelled"))
+    # order_yes
+    cart = CARTS.get(user_id, [])
+    if not cart:
+        await query.message.reply_text(t(context, user_id, "cart_empty"))
         return ConversationHandler.END
 
-    # YES -> ghi đơn
-    cart_data = pending["cart"]
-    total = pending["total"]
-    phone = pending["phone"]
-    address = pending["address"]
-    lang = get_lang(context, user.id)
+    total = sum(row["price"] * row["qty"] for row in cart)
+    phone = context.user_data.get("order_phone", "")
+    address = context.user_data.get("order_address", "")
+    lang = get_lang(context, user_id)
 
+    # tạo order_id
     current_records = orders_sheet.get_all_records()
     order_id = 10001 + len(current_records)
 
-    items_text = ", ".join([f"{row['qty']}x {row['name']}" for row in cart_data])
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    items_text = ", ".join([f"{row['qty']}x {row['name']}" for row in cart])
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    orders_sheet.append_row(
-        [
-            order_id,
-            user.id,
-            user.username or "",
-            phone,
-            items_text,
-            total,
-            address,
-            lang,
-            now,
-            "pending",
-        ]
-    )
+    # ghi vào sheet ORDERS
+    try:
+        orders_sheet.append_row(
+            [
+                order_id,
+                user_id,
+                user.username or "",
+                phone,
+                items_text,
+                total,
+                address,
+                lang,
+                now_str,
+                "pending",
+            ]
+        )
+    except Exception as e:
+        print(f"[ORDERS_APPEND_ERROR] {e}")
 
-    CARTS[user.id] = []
+    # Tắt nút Yes/No trên message cũ
+    await query.edit_message_reply_markup(reply_markup=None)
 
-    await query.message.reply_text(
-        t(context, user.id, "order_saved", order_id=order_id)
-    )
+    # Xóa giỏ
+    CARTS[user_id] = []
 
-    # Gửi về nhóm Admin & Shipper
-    if ADMIN_CHAT_ID != 0:
-        admin_msg = (
-            f"📦 ĐƠN HÀNG MỚI #{order_id}\n"
-            f"👤 Khách: {user.full_name}\n"
-            f"🆔 ID: {user.id}\n"
-            f"📞 SĐT: {phone}\n"
-            f"📍 Địa chỉ: {address}\n"
-            f"🍱 Món: {items_text}\n"
-            f"💰 Tổng: {total}đ\n"
-            f"⏰ Thời gian: {now}"
+    # Tìm ảnh đầu tiên trong giỏ cho admin (nếu có)
+    first_image = None
+    for row in cart:
+        if row.get("image_url"):
+            first_image = row["image_url"]
+            break
+
+    # Thông báo sang nhóm Admin nếu có
+    if ADMIN_CHAT_ID:
+        admin_text = (
+            f"🆕 ĐƠN HÀNG MỚI #{order_id}\n"
+            f"Khách: {user.full_name} (id: {user_id})\n"
+            f"UserName: @{user.username if user.username else 'N/A'}\n"
+            f"SĐT: {phone}\n"
+            f"Địa chỉ: {address}\n"
+            f"Món: {items_text}\n"
+            f"Tổng: {total}đ\n"
+            f"Thời gian: {now_str}"
         )
         try:
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_msg)
+            if first_image:
+                await context.bot.send_photo(
+                    chat_id=ADMIN_CHAT_ID,
+                    photo=first_image,
+                    caption=admin_text,
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=admin_text,
+                )
         except Exception as e:
-            print("Lỗi gửi group admin:", e)
-    else:
-        print("ADMIN_CHAT_ID = 0, không gửi được về nhóm admin")
+            print(f"[ADMIN_NOTIFY_ERROR] {e}")
 
+    # Báo lại cho khách
+    await query.message.reply_text(
+        t(context, user_id, "order_saved", order_id=order_id)
+    )
     return ConversationHandler.END
 
 
@@ -556,31 +617,7 @@ async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ================== XỬ LÝ NÚT MENU CHÍNH ==================
-
-
-async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý các nút: Menu / Cart / Help (order xử lý riêng trong Conversation)."""
-    query = update.callback_query
-    await query.answer()
-    user = query.from_user
-    data = query.data
-    lang = get_lang(context, user.id)
-
-    if data == "action_menu":
-        await _send_menu(query.message, user, context)
-    elif data == "action_cart":
-        await _send_cart(query.message, user, context)
-    elif data == "action_help":
-        await query.message.reply_text(t(context, user.id, "help"))
-
-    # Gợi ý thao tác tiếp
-    await query.message.reply_text(
-        t(context, user.id, "choose_action"), reply_markup=main_menu_keyboard(lang)
-    )
-
-
-# ================== main() ==================
+# ================== MAIN ==================
 
 
 def main():
@@ -590,30 +627,23 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("menu", menu_cmd))
-    app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CommandHandler("cart", cart_cmd))
+    app.add_handler(CommandHandler("add", add_cmd))
 
-    # Chọn ngôn ngữ
+    # Nút chọn ngôn ngữ
     app.add_handler(CallbackQueryHandler(lang_button, pattern="^lang_"))
 
-    # Nút Menu / Cart / Help (KHÔNG gồm order)
-    app.add_handler(
-        CallbackQueryHandler(main_menu_callback, pattern="^action_(menu|cart|help)$")
-    )
+    # Nút main menu
+    app.add_handler(CallbackQueryHandler(main_menu_router, pattern="^main_menu_"))
 
     # Conversation /order
     conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("order", order_start_cmd),
-            CallbackQueryHandler(order_start_button, pattern="^action_order$"),
-        ],
+        entry_points=[CommandHandler("order", order_start)],
         states={
             PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_phone)],
             ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_address)],
             CONFIRM: [
-                CallbackQueryHandler(
-                    order_confirm_button, pattern="^order_(yes|no)$"
-                )
+                CallbackQueryHandler(order_confirm_button, pattern="^order_"),
             ],
         },
         fallbacks=[CommandHandler("cancel", order_cancel)],
